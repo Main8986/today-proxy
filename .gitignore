@@ -1,0 +1,23 @@
+# 运行时数据：绝不要提交
+data/
+*.log
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 本地配置
+.env
+today-proxy.env
+*.local
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# 打包产物
+*.tar.gz
+*.zip

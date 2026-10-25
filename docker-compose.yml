@@ -1,0 +1,31 @@
+services:
+  today-proxy:
+    build: .
+    image: today-proxy:latest
+    container_name: today-proxy
+    restart: unless-stopped
+    ports:
+      - "8770:8770"
+    environment:
+      LISTEN_HOST: 0.0.0.0
+      LISTEN_PORT: "8770"
+      # 客户端 API Key，多个逗号分隔；留空 = 不鉴权（仅限内网）
+      AUTH_TOKENS: "${AUTH_TOKENS:-}"
+      # Today session token，多个逗号分隔；也可放在 ./data/session.txt
+      TODAY_SESSION: "${TODAY_SESSION:-}"
+      # 号池权重，和 TODAY_SESSION 一一对应，例如 "1,2,1"
+      POOL_WEIGHTS: "${POOL_WEIGHTS:-}"
+      POOL_LABELS: "${POOL_LABELS:-}"
+      LANE_CONCURRENCY: "${LANE_CONCURRENCY:-1}"
+      MAX_USAGE_PERCENT: "${MAX_USAGE_PERCENT:-98}"
+      QUEUE_WAIT: "${QUEUE_WAIT:-120}"
+      DEFAULT_MODEL: "${DEFAULT_MODEL:-deepseek}"
+      REPLY_TIMEOUT: "180"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8770/health',timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

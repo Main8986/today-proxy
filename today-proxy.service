@@ -1,0 +1,23 @@
+[Unit]
+Description=today-proxy — Today.app AI reverse proxy (OpenAI/Anthropic compatible)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/today-proxy
+EnvironmentFile=-/etc/today-proxy.env
+ExecStart=/usr/bin/python3 /opt/today-proxy/server.py
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/today-proxy.log
+StandardError=append:/var/log/today-proxy.log
+# 轻量沙箱：只读系统，可写自己的 data/
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/today-proxy/data /var/log
+
+[Install]
+WantedBy=multi-user.target
