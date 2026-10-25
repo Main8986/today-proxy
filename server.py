@@ -31,7 +31,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core import TodayError, MODEL_OPTIONS, NAME2OPT, send_otp, verify_otp
-from pool import Pool, run_with_pool, NoAccount
+from pool import Pool, run_with_pool, NoAccount, _safe_usage
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(ROOT, "data")
@@ -271,7 +271,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"accounts": POOL.snapshot(),
                                     "concurrency": __import__("pool").LANE_CONCURRENCY,
                                     "max_usage": __import__("pool").MAX_USAGE})
+        if u == "/ui/usage":
+            return self._json(200, self._usage())
+        if u == "/v1/usage":
+            # 给客户端程序读的用量，纯只读
+            if not self._authorized():
+                return self._err(401, "invalid api key", "authentication_error")
+            return self._json(200, self._usage())
         self._err(404, "not found", "not_found")
+
+    def _usage(self):
+        """查询各账号用量。只读，绝不触发重置。"""
+        out = []
+        for a in POOL.accounts:
+            rec = {"label": a.label}
+            try:
+                rec.update(a.client.usage_detail())
+            except Exception as e:
+                rec["error"] = str(e)[:150]
+            out.append(rec)
+        return {"accounts": out,
+                "note": "本接口仅查询，不会消耗重置次数"}
 
     def _ui_state(self):
         pool = POOL.snapshot()
@@ -319,9 +339,40 @@ class Handler(BaseHTTPRequestHandler):
                     CFG.remove_accounts(removed)
                 return self._json(200, {"ok": bool(removed), "removed": len(removed),
                                         "accounts": len(POOL)})
+            if path == "/ui/pool/onboard":
+                # 自动走完新手引导，触发赠送的 Pro。不改额度，可反复执行。
+                b = self._body()
+                key = (b.get("key") or "").strip()
+                if not key:
+                    return self._err(400, "key required")
+                try:
+                    res = POOL.onboarding_account(key)
+                except TodayError as e:
+                    return self._err(e.status or 502, str(e), "onboarding_failed")
+                return self._json(200, res)
             if path == "/ui/pool/refresh":
                 recs = POOL.healthcheck(force=True)
                 return self._json(200, {"accounts": recs})
+            if path == "/ui/pool/reset":
+                # 会真的消耗一次重置配额，必须带 confirm=RESET
+                b = self._body()
+                if b.get("confirm") != "RESET":
+                    return self._err(400, "需要确认：请传 confirm=RESET", "confirmation_required")
+                key = b.get("key")
+                acct = None
+                for a in POOL.accounts:
+                    if a.label == key or a.token.startswith(key or ""):
+                        acct = a
+                        break
+                if acct is None:
+                    return self._err(404, "账号不存在", "not_found")
+                try:
+                    rc = acct.client.consume_reset(b.get("resetId") or None)
+                except TodayError as e:
+                    return self._err(e.status or 502, str(e) + (": " + e.body if e.body else ""),
+                                     "reset_failed")
+                threading.Thread(target=_safe_usage, args=(acct,), daemon=True).start()
+                return self._json(200, {"ok": True, "label": acct.label, "receipt": rc})
 
             if not self._authorized():
                 return self._err(401, "invalid api key", "authentication_error")
@@ -344,7 +395,15 @@ class Handler(BaseHTTPRequestHandler):
         text = flatten_messages(messages)
         if not text.strip():
             raise TodayError("empty prompt", 400)
-        return run_with_pool(POOL, model or CFG.default_model, text, timeout)
+        name = (model or CFG.default_model).strip()
+        # 不认识的模型名直接报错，不要静默替换。
+        # 之前 silent fallback 到 deepseek：客户端以为在用 glm，实际消耗的是 deepseek 额度，
+        # 排查时完全看不出来。宁可 400 让人立刻发现。
+        if name.lower() not in NAME2OPT:
+            raise TodayError(
+                "unknown model '%s'; available: %s"
+                % (name, ", ".join(sorted(NAME2OPT))), 400)
+        return run_with_pool(POOL, name, text, timeout)
 
     def _chat(self, body):
         model = body.get("model") or CFG.default_model
@@ -364,22 +423,45 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("X-Accel-Buffering", "no")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
-        def chunk(delta, finish=None):
-            payload = {"id": cid, "object": "chat.completion.chunk", "created": created,
-                       "model": model, "choices": [{"index": 0, "delta": delta,
-                                                    "finish_reason": finish}]}
-            self.wfile.write(("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
+        def emit(obj):
+            """按 HTTP/1.1 chunked 格式写一帧 SSE。
+
+            以前这里既没 Content-Length 也没 Transfer-Encoding，只靠 Connection: close
+            暗示"读到断连为止"。curl 能容错，但 Minis 的 HTTP 客户端认为这是协议违规，
+            直接抛 Stream error。必须显式分块。
+            """
+            payload = ("data: " + json.dumps(obj, ensure_ascii=False) + "\n\n").encode()
+            self.wfile.write(b"%x\r\n" % len(payload) + payload + b"\r\n")
+            self.wfile.flush()
+
+        def emit_raw(text):
+            payload = text.encode()
+            self.wfile.write(b"%x\r\n" % len(payload) + payload + b"\r\n")
             self.wfile.flush()
 
         try:
-            chunk({"role": "assistant", "content": ""})
-            chunk({"content": reply})
-            chunk({}, "stop")
-            self.wfile.write(b"data: [DONE]\n\n")
+            emit({"id": cid, "object": "chat.completion.chunk", "created": created,
+                  "model": model,
+                  "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""},
+                               "finish_reason": None}]})
+            # 上游没有 token 级流式，把已拿到的全文按小片推给客户端，
+            # 让界面能渐进显示而不是等整段。
+            step = 12
+            for i in range(0, len(reply), step):
+                emit({"id": cid, "object": "chat.completion.chunk", "created": created,
+                      "model": model,
+                      "choices": [{"index": 0, "delta": {"content": reply[i:i + step]},
+                                   "finish_reason": None}]})
+            emit({"id": cid, "object": "chat.completion.chunk", "created": created,
+                  "model": model,
+                  "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+            emit_raw("data: [DONE]\n\n")
+            self.wfile.write(b"0\r\n\r\n")      # chunked 结束标记
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -407,12 +489,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
 
         def ev(name, obj):
-            self.wfile.write(("event: %s\ndata: %s\n\n"
-                              % (name, json.dumps(obj, ensure_ascii=False))).encode())
+            payload = ("event: %s\ndata: %s\n\n"
+                       % (name, json.dumps(obj, ensure_ascii=False))).encode()
+            self.wfile.write(b"%x\r\n" % len(payload) + payload + b"\r\n")
             self.wfile.flush()
 
         try:
@@ -429,6 +513,8 @@ class Handler(BaseHTTPRequestHandler):
                                  "delta": {"stop_reason": "end_turn", "stop_sequence": None},
                                  "usage": {"output_tokens": len(reply)}})
             ev("message_stop", {"type": "message_stop"})
+            self.wfile.write(b"0\r\n\r\n")      # chunked 结束标记
+            self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
 

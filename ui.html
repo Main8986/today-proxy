@@ -32,9 +32,13 @@
   .acct .top { display:flex; gap:8px; align-items:center; }
   .acct .name { font-weight:600; }
   .acct .id { color:#63676e; font-size:11px; font-family:ui-monospace,monospace; }
-  .acct .bar { height:5px; border-radius:3px; background:#26282d; margin:8px 0 6px; overflow:hidden; }
-  .acct .bar i { display:block; height:100%; background:#4a7cff; }
-  .acct .bar i.hot { background:#e0674f; }
+  .reset-row { display:flex; align-items:center; gap:10px; margin-top:9px;
+               padding-top:9px; border-top:1px solid #22252a; }
+  .reset-row .rc { color:#e0b44f; }
+  .reset-row button[disabled] { opacity:.35; cursor:not-allowed; }
+  .bar { height:5px; border-radius:3px; background:#26282d; margin:5px 0 0; overflow:hidden; }
+  .bar i { display:block; height:100%; background:#4a7cff; transition:width .3s; }
+  .bar i.hot { background:#e0674f; }
   .acct .meta { display:flex; gap:12px; flex-wrap:wrap; color:#7a7f87; font-size:12px; }
   .dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
   .dot.ok { background:#4ec78f; } .dot.bad { background:#f06262; } .dot.warn { background:#e0b44f; }
@@ -54,6 +58,15 @@
   <div class="card">
     <h2>概览 <button class="mini" onclick="refresh()">刷新额度</button></h2>
     <div class="kv" id="overview"><b>加载中…</b><span></span></div>
+  </div>
+
+  <div class="card">
+    <h2>用量明细 <span class="muted" id="resetInfo"></span>
+      <button class="mini" onclick="loadUsage()">刷新</button></h2>
+    <div id="usagePanel"><div class="muted">加载中…</div></div>
+    <div class="muted" style="margin-top:8px">
+      这里是只读查询。重置在下面的号池卡片里，需要手打 RESET 确认。
+    </div>
   </div>
 
   <div class="card">
@@ -126,6 +139,18 @@ async function load() {
         ${a.cooldown > 0 ? `<span class="bad">冷却 ${a.cooldown}s</span>` : ''}
         ${a.last_error ? `<span class="bad" title="${a.last_error}">${a.last_error.slice(0,28)}</span>` : ''}
       </div>
+      <div class="reset-row">
+        <span class="muted">可重置 <b class="rc">${a.resets == null ? '—' : a.resets}</b> 次</span>
+        <button class="danger mini" ${(a.resets == null || a.resets < 1) ? 'disabled' : ''}
+                onclick="doReset('${a.label}')">立即重置</button>
+      </div>
+      <div class="reset-row">
+        <span class="muted">新手引导
+          ${a.onboarding === true ? '<b class="ok">已完成</b>'
+            : a.onboarding === false ? '<b class="bad">未完成</b>' : '<b>—</b>'}</span>
+        <button class="mini" ${a.onboarding === true ? 'disabled' : ''}
+                onclick="doOnboard('${a.label}')">自动完成领 Pro</button>
+      </div>
     </div>`;
   }).join('') || '<div class="muted">暂无账号，先登录或粘贴 token</div>';
 
@@ -140,6 +165,36 @@ model    : deepseek / glm-5.3
 base_url : ${origin}
 model    : deepseek / glm-5.3`;
 }
+async function loadUsage() {
+  const box = $('usagePanel');
+  try {
+    const d = await api('/ui/usage');
+    const a = (d.accounts || [])[0];
+    if (!a || a.error) { box.innerHTML = '<div class="bad">' + ((a && a.error) || '无账号') + '</div>'; return; }
+    const rc = a.resets && a.resets.total != null ? a.resets.total : '—';
+    $('resetInfo').textContent = '可重置 ' + rc + ' 次';
+    const rows = (a.breakdown || []).map(x => {
+      const p = x.percent == null ? 0 : x.percent;
+      const cls = p >= 90 ? 'hot' : '';
+      return `<div style="margin-bottom:7px">
+        <div style="display:flex;font-size:12px">
+          <span style="flex:1">${x.title}</span>
+          <span class="muted">${x.text || (p + '%')}</span>
+        </div>
+        <div class="bar"><i class="${cls}" style="width:${p}%"></i></div>
+      </div>`;
+    }).join('');
+    box.innerHTML = `
+      <div class="kv" style="margin-bottom:10px">
+        <b>套餐</b><span>${a.plan || '-'} <span class="muted">至 ${(a.periodEnd||'').slice(0,10)}</span></span>
+        <b>总用量</b><span>${a.progressText || '-'}</span>
+        <b>可重置</b><span>${rc} 次</span>
+      </div>` + rows;
+  } catch (e) {
+    box.innerHTML = '<div class="bad">查询失败：' + e + '</div>';
+  }
+}
+
 async function refresh() {
   await api('/ui/pool/refresh', {});
   load();
@@ -150,6 +205,48 @@ async function addTok() {
   $('tok').value = '';
   if (r.error) alert(r.error.message); else load();
 }
+async function doOnboard(label) {
+  if (!confirm('对 ' + label + ' 执行自动新手引导？\n\n'
+      + '会依次提交 connectors / agent-name / agent-avatar / memory / notification，\n'
+      + '最后调用 done。用于触发新号赠送的 Pro。\n\n'
+      + '不会消耗重置次数。')) return;
+  try {
+    const r = await api('/ui/pool/onboard', {key: label});
+    if (r.error) { alert('失败：' + r.error.message); return; }
+    alert('引导完成\n\n'
+      + '引导状态：' + (r.onboardingBefore ? '已完成' : '未完成')
+      + ' → ' + (r.onboardingAfter ? '已完成' : '未完成') + '\n'
+      + '套餐：' + (r.planBefore || '—') + ' → ' + (r.planAfter || '—') + '\n\n'
+      + r.log.join('\n'));
+    load(); loadUsage();
+  } catch (e) { alert('出错：' + e); }
+}
+
+async function doReset(label) {
+  // 三重防线：先看到次数 -> 手打 RESET -> 才发请求
+  const st = await api('/ui/pool');
+  const a = (st.accounts || []).find(x => x.label === label);
+  const left = a && a.resets != null ? a.resets : 0;
+  if (left < 1) { alert('这个账号没有可用的重置次数'); return; }
+
+  const input = prompt(
+    '⚠ 重置会立即消耗 1 次配额，不可撤销\n\n' +
+    '账号：' + label + '\n' +
+    '当前次数：' + left + ' 次\n' +
+    '重置后：' + (left - 1) + ' 次\n\n' +
+    '确认请输入大写 RESET：');
+  if (input !== 'RESET') { if (input !== null) alert('已取消'); return; }
+
+  try {
+    const r = await api('/ui/pool/reset', {key: label, confirm: 'RESET'});
+    if (r.error) { alert('重置失败：' + r.error.message); return; }
+    alert('重置成功\n消耗 1 次，剩余 ' + r.receipt.availableAfter + ' 次');
+    load(); loadUsage();
+  } catch (e) {
+    alert('重置出错：' + e);
+  }
+}
+
 async function rm(label) {
   if (!confirm('移除账号 ' + label + '？')) return;
   await api('/ui/pool/remove', {key: label});
@@ -168,7 +265,9 @@ async function verify() {
   if (r.ok) { $('code').value = ''; load(); }
 }
 load();
+loadUsage();
 setInterval(load, 15000);
+setInterval(loadUsage, 60000);
 </script>
 </body>
 </html>

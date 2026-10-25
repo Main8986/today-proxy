@@ -86,6 +86,18 @@ class Account:
             c.plan = st.get("plan")
             c.model = (st.get("modelOptions") or {}).get("selectedOptionId")
             self._probed_at = now
+            # 顺带查一次新手引导状态（只读）
+            try:
+                c.onboarding_finished_flag = c.onboarding_finished()
+            except Exception:
+                pass
+            # 顺带查一次可用重置次数（只读接口，不消耗次数）
+            try:
+                rq = c.reset_quota()
+                if isinstance(rq, dict) and rq.get("total") is not None:
+                    c.reset_count = rq["total"]
+            except Exception:
+                pass
 
     # ---------- 状态 ----------
     def snapshot(self):
@@ -98,6 +110,8 @@ class Account:
             "plan": c.plan,
             "model": c.model,
             "usage_percent": c.usage_percent,
+            "resets": c.reset_count,
+            "onboarding": c.onboarding_finished_flag,
             "inflight": c.inflight,
             "cooldown": max(0, int(c.cooldown_until - now)),
             "last_error": c.last_error,
@@ -261,6 +275,29 @@ class Pool:
                 raise NoAccount("no usable account for model=%s (cooldown/exhausted/busy)" % model, 503)
             time.sleep(0.25)
 
+    def onboarding_account(self, key):
+        """对一个账号执行自动引导，返回结果。会改该账号的服务端状态。"""
+        acct = None
+        for a in self.accounts:
+            if a.label == key or a.token.startswith(key or ""):
+                acct = a
+                break
+        if acct is None:
+            raise TodayError("account not found: %s" % key, 404)
+        before = acct.client.plan
+        was = acct.client.onboarding_finished()
+        res = acct.client.onboarding_auto()
+        try:
+            acct.client.refresh_usage(force=True)
+        except Exception:
+            pass
+        res["onboardingBefore"] = was
+        res["onboardingAfter"] = acct.client.onboarding_finished()
+        res["planBefore"] = before
+        res["planAfter"] = acct.client.plan
+        res["label"] = acct.label
+        return res
+
     def healthcheck(self, force=False):
         out = []
         for a in self.accounts:
@@ -272,6 +309,8 @@ class Pool:
                     a.reward()          # 探活成功：清冷却、清失败计数
                 rec.update(plan=a.client.plan, usage_percent=a.client.usage_percent,
                            model=a.client.model, user_id=a.client.user_id,
+                           resets=a.client.reset_count,
+                           onboarding=a.client.onboarding_finished_flag,
                            healthy=a.available, cooldown=0, last_error="")
             except TodayError as e:
                 a.penalize(e)           # 凭证失效 / 网络错误：立刻进冷却，不再派单

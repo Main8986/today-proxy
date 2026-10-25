@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>today-proxy 控制台</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+         background:#111214; color:#e6e6e6; }
+  .wrap { max-width:760px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-size:18px; margin:0 0 4px; letter-spacing:.5px; }
+  .sub { color:#7a7f87; font-size:12px; margin-bottom:18px; }
+  .card { background:#191b1f; border:1px solid #26282d; border-radius:10px; padding:16px; margin-bottom:14px; }
+  .card h2 { font-size:13px; margin:0 0 12px; color:#9aa0a8; font-weight:600; letter-spacing:.6px;
+             display:flex; justify-content:space-between; align-items:center; }
+  .row { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+  input, select, button { font:inherit; border-radius:7px; border:1px solid #2e3138;
+        background:#0f1012; color:#e6e6e6; padding:9px 11px; outline:none; }
+  input { flex:1; min-width:110px; }
+  input.sm { flex:0 0 70px; min-width:70px; }
+  input:focus { border-color:#4a7cff; }
+  button { background:#2b2f36; cursor:pointer; }
+  button.primary { background:#3b6cf6; border-color:#3b6cf6; color:#fff; }
+  button.danger { background:#3a2224; border-color:#5a2e31; color:#f08585; padding:5px 10px; }
+  button.mini { padding:5px 10px; font-size:12px; }
+  button:active { transform:translateY(1px); }
+  .acct { border:1px solid #26282d; border-radius:9px; padding:11px 12px; margin-bottom:9px; }
+  .acct.bad { border-color:#5a2e31; background:#1b1415; }
+  .acct.warn { border-color:#5a4a20; background:#1b1810; }
+  .acct .top { display:flex; gap:8px; align-items:center; }
+  .acct .name { font-weight:600; }
+  .acct .id { color:#63676e; font-size:11px; font-family:ui-monospace,monospace; }
+  .reset-row { display:flex; align-items:center; gap:10px; margin-top:9px;
+               padding-top:9px; border-top:1px solid #22252a; }
+  .reset-row .rc { color:#e0b44f; }
+  .reset-row button[disabled] { opacity:.35; cursor:not-allowed; }
+  .bar { height:5px; border-radius:3px; background:#26282d; margin:5px 0 0; overflow:hidden; }
+  .bar i { display:block; height:100%; background:#4a7cff; transition:width .3s; }
+  .bar i.hot { background:#e0674f; }
+  .acct .meta { display:flex; gap:12px; flex-wrap:wrap; color:#7a7f87; font-size:12px; }
+  .dot { width:7px; height:7px; border-radius:50%; display:inline-block; }
+  .dot.ok { background:#4ec78f; } .dot.bad { background:#f06262; } .dot.warn { background:#e0b44f; }
+  .kv { display:grid; grid-template-columns:88px 1fr; gap:6px 10px; font-size:13px; }
+  .kv b { color:#7a7f87; font-weight:400; }
+  .muted { color:#63676e; font-size:12px; }
+  .ok { color:#4ec78f; } .bad { color:#f06262; }
+  pre { white-space:pre-wrap; word-break:break-all; background:#0d0e10; padding:10px;
+        border-radius:8px; border:1px solid #22242a; font-size:12px; margin:0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>today-proxy</h1>
+  <div class="sub">Today 后端 → OpenAI / Anthropic 兼容接口 · 多账号负载均衡</div>
+
+  <div class="card">
+    <h2>概览 <button class="mini" onclick="refresh()">刷新额度</button></h2>
+    <div class="kv" id="overview"><b>加载中…</b><span></span></div>
+  </div>
+
+  <div class="card">
+    <h2>用量明细 <span class="muted" id="resetInfo"></span>
+      <button class="mini" onclick="loadUsage()">刷新</button></h2>
+    <div id="usagePanel"><div class="muted">加载中…</div></div>
+    <div class="muted" style="margin-top:8px">
+      这里是只读查询。重置在下面的号池卡片里，需要手打 RESET 确认。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>号池 <span class="muted" id="poolCount"></span></h2>
+    <div id="pool"><div class="muted">暂无账号</div></div>
+    <div class="row" style="margin-top:12px">
+      <input id="tok" placeholder="粘贴 Today session token（32 位）">
+      <input id="w" class="sm" placeholder="权重" value="1">
+      <button class="primary" onclick="addTok()">加号</button>
+    </div>
+    <div class="muted">权重越高分到的请求越多；额度 ≥ 98% 或冷却中的号自动跳过。</div>
+  </div>
+
+  <div class="card">
+    <h2>短信登录加号</h2>
+    <div class="row">
+      <input id="phone" placeholder="+8613800000000" autocomplete="tel">
+      <button onclick="sendOtp()">发验证码</button>
+    </div>
+    <div class="row">
+      <input id="code" placeholder="6 位验证码" inputmode="numeric">
+      <input id="lw" class="sm" placeholder="权重" value="1">
+      <button class="primary" onclick="verify()">登录并加入号池</button>
+    </div>
+    <div class="muted" id="loginMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>客户端接入</h2>
+    <pre id="usage"></pre>
+  </div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+async function api(p, body) {
+  const r = await fetch(p, body ? {method:'POST', headers:{'Content-Type':'application/json'},
+                                 body: JSON.stringify(body)} : {});
+  return r.json();
+}
+function pct(x) { return x === null || x === undefined ? '—' : (Math.round(x*10)/10) + '%'; }
+async function load() {
+  const s = await api('/ui/state');
+  const pool = s.pool || [];
+  const healthy = pool.filter(a => a.healthy).length;
+  $('overview').innerHTML = `
+    <b>账号</b><span>${s.healthy} / ${s.accounts} 可用</span>
+    <b>默认模型</b><span>${s.default_model}</span>
+    <b>上游模型</b><span>${s.selected || '-'}</span>`;
+  $('poolCount').textContent = `${pool.length} 个`;
+  $('pool').innerHTML = pool.map(a => {
+    const usage = a.usage_percent;
+    const hot = usage !== null && usage >= 90;
+    const cls = !a.healthy ? (a.cooldown > 0 ? 'bad' : 'warn') : '';
+    const dot = a.healthy ? 'ok' : (a.cooldown > 0 ? 'bad' : 'warn');
+    return `<div class="acct ${cls}">
+      <div class="top">
+        <span class="dot ${dot}"></span>
+        <span class="name">${a.label}</span>
+        <span class="id">${(a.user_id||'-').slice(0,12)}</span>
+        <span style="flex:1"></span>
+        <span class="muted">×${a.weight}</span>
+        <button class="danger" onclick="rm('${a.label}')">移除</button>
+      </div>
+      <div class="bar"><i class="${hot?'hot':''}" style="width:${usage===null?0:usage}%"></i></div>
+      <div class="meta">
+        <span>额度 ${pct(usage)}</span>
+        <span>${a.plan || '-'}</span>
+        <span>在跑 ${a.inflight}</span>
+        <span>成功 ${a.ok} / 失败 ${a.err}</span>
+        ${a.cooldown > 0 ? `<span class="bad">冷却 ${a.cooldown}s</span>` : ''}
+        ${a.last_error ? `<span class="bad" title="${a.last_error}">${a.last_error.slice(0,28)}</span>` : ''}
+      </div>
+      <div class="reset-row">
+        <span class="muted">可重置 <b class="rc">${a.resets == null ? '—' : a.resets}</b> 次</span>
+        <button class="danger mini" ${(a.resets == null || a.resets < 1) ? 'disabled' : ''}
+                onclick="doReset('${a.label}')">立即重置</button>
+      </div>
+    </div>`;
+  }).join('') || '<div class="muted">暂无账号，先登录或粘贴 token</div>';
+
+  const origin = location.origin;
+  $('usage').textContent =
+`# OpenAI 兼容
+base_url : ${origin}/v1
+api_key  : <AUTH_TOKENS 里任意一个>
+model    : deepseek / glm-5.3
+
+# Anthropic 兼容（Minis / Claude 客户端）
+base_url : ${origin}
+model    : deepseek / glm-5.3`;
+}
+async function loadUsage() {
+  const box = $('usagePanel');
+  try {
+    const d = await api('/ui/usage');
+    const a = (d.accounts || [])[0];
+    if (!a || a.error) { box.innerHTML = '<div class="bad">' + ((a && a.error) || '无账号') + '</div>'; return; }
+    const rc = a.resets && a.resets.total != null ? a.resets.total : '—';
+    $('resetInfo').textContent = '可重置 ' + rc + ' 次';
+    const rows = (a.breakdown || []).map(x => {
+      const p = x.percent == null ? 0 : x.percent;
+      const cls = p >= 90 ? 'hot' : '';
+      return `<div style="margin-bottom:7px">
+        <div style="display:flex;font-size:12px">
+          <span style="flex:1">${x.title}</span>
+          <span class="muted">${x.text || (p + '%')}</span>
+        </div>
+        <div class="bar"><i class="${cls}" style="width:${p}%"></i></div>
+      </div>`;
+    }).join('');
+    box.innerHTML = `
+      <div class="kv" style="margin-bottom:10px">
+        <b>套餐</b><span>${a.plan || '-'} <span class="muted">至 ${(a.periodEnd||'').slice(0,10)}</span></span>
+        <b>总用量</b><span>${a.progressText || '-'}</span>
+        <b>可重置</b><span>${rc} 次</span>
+      </div>` + rows;
+  } catch (e) {
+    box.innerHTML = '<div class="bad">查询失败：' + e + '</div>';
+  }
+}
+
+async function refresh() {
+  await api('/ui/pool/refresh', {});
+  load();
+}
+async function addTok() {
+  const r = await api('/ui/pool/add', {token: $('tok').value.trim(),
+                                       weight: parseFloat($('w').value) || 1});
+  $('tok').value = '';
+  if (r.error) alert(r.error.message); else load();
+}
+async function doReset(label) {
+  // 三重防线：先看到次数 -> 手打 RESET -> 才发请求
+  const st = await api('/ui/pool');
+  const a = (st.accounts || []).find(x => x.label === label);
+  const left = a && a.resets != null ? a.resets : 0;
+  if (left < 1) { alert('这个账号没有可用的重置次数'); return; }
+
+  const input = prompt(
+    '⚠ 重置会立即消耗 1 次配额，不可撤销\n\n' +
+    '账号：' + label + '\n' +
+    '当前次数：' + left + ' 次\n' +
+    '重置后：' + (left - 1) + ' 次\n\n' +
+    '确认请输入大写 RESET：');
+  if (input !== 'RESET') { if (input !== null) alert('已取消'); return; }
+
+  try {
+    const r = await api('/ui/pool/reset', {key: label, confirm: 'RESET'});
+    if (r.error) { alert('重置失败：' + r.error.message); return; }
+    alert('重置成功\n消耗 1 次，剩余 ' + r.receipt.availableAfter + ' 次');
+    load(); loadUsage();
+  } catch (e) {
+    alert('重置出错：' + e);
+  }
+}
+
+async function rm(label) {
+  if (!confirm('移除账号 ' + label + '？')) return;
+  await api('/ui/pool/remove', {key: label});
+  load();
+}
+async function sendOtp() {
+  const r = await api('/ui/login/send', {phone: $('phone').value});
+  $('loginMsg').textContent = r.raw ? '已发送（' + r.raw.slice(0,60) + '）' : JSON.stringify(r);
+}
+async function verify() {
+  const r = await api('/ui/login/verify', {phone: $('phone').value, code: $('code').value,
+                                           weight: parseFloat($('lw').value) || 1});
+  $('loginMsg').innerHTML = r.ok
+    ? '<span class="ok">已加入号池：' + (r.user?.email || r.user?.id) + (r.added ? '' : '（已存在）') + '</span>'
+    : '<span class="bad">失败：' + (r.error?.message || JSON.stringify(r)) + '</span>';
+  if (r.ok) { $('code').value = ''; load(); }
+}
+load();
+loadUsage();
+setInterval(load, 15000);
+setInterval(loadUsage, 60000);
+</script>
+
+<script>
+/* ===== 静态预览：不走网络，直接把假数据塞进现有函数 ===== */
+window.addEventListener('load', function(){
+  const POOL = [
+    {label:'主号 GpaK', user_id:'GpaKA7OUzuAE', weight:1, plan:'pro',
+     model:'model.deepseek-v4.1-flash', usage_percent:2, resets:2,
+     inflight:0, cooldown:0, last_error:'', ok:12, err:0, healthy:true},
+    {label:'备用号', user_id:'Xb9Kq2LmNpQr', weight:2, plan:'pro',
+     model:'model.deepseek-v4.1-flash', usage_percent:47, resets:0,
+     inflight:1, cooldown:0, last_error:'', ok:8, err:1, healthy:true}
+  ];
+  const STATE = {accounts:2, healthy:2, default_model:'deepseek',
+                 selected:'model.deepseek-v4.1-flash', pool: POOL};
+  const usage = {plan:'pro', periodEnd:'2026-11-25T14:58:30.412Z',
+    progressText:'剩余 98%', resets:{total:2},
+    breakdown:[
+      {title:'任务',percent:0,text:'0%'},
+      {title:'对话',percent:2,text:'2%'},
+      {title:'定时任务',percent:0,text:'0%'},
+      {title:'每日简报',percent:12,text:'12%'},
+      {title:'记忆更新',percent:3,text:'3%'},
+      {title:'云电脑',percent:0,text:'0%'}
+    ]};
+
+  // 1. 概览
+  const ov = document.getElementById('overview');
+  ov.innerHTML = '<b>账号</b><span>2 / 2 可用</span>' +
+                 '<b>默认模型</b><span>deepseek</span>' +
+                 '<b>上游模型</b><span>model.deepseek-v4.1-flash</span>';
+
+  // 2. 号池
+  document.getElementById('poolCount').textContent = '2 个';
+  document.getElementById('pool').innerHTML = POOL.map(a => {
+    const hot = a.usage_percent >= 90;
+    return `<div class="acct">
+      <div class="top">
+        <span class="dot ok"></span>
+        <span class="name">${a.label}</span>
+        <span class="id">${a.user_id.slice(0,12)}</span>
+        <span style="flex:1"></span>
+        <span class="muted">×${a.weight}</span>
+        <button class="danger">移除</button>
+      </div>
+      <div class="bar"><i class="${hot?'hot':''}" style="width:${a.usage_percent}%"></i></div>
+      <div class="meta">
+        <span>额度 ${a.usage_percent}%</span>
+        <span>${a.plan}</span>
+        <span>在跑 ${a.inflight}</span>
+        <span>成功 ${a.ok} / 失败 ${a.err}</span>
+      </div>
+      <div class="reset-row">
+        <span class="muted">可重置 <b class="rc">${a.resets}</b> 次</span>
+        <button class="danger mini" ${a.resets<1?'disabled':''}>立即重置</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // 3. 用量明细
+  document.getElementById('resetInfo').textContent = '可重置 2 次';
+  const rows = usage.breakdown.map(x => {
+    const cls = x.percent >= 90 ? 'hot' : '';
+    return `<div style="margin-bottom:7px">
+      <div style="display:flex;font-size:12px">
+        <span style="flex:1">${x.title}</span>
+        <span class="muted">${x.text}</span>
+      </div>
+      <div class="bar"><i class="${cls}" style="width:${x.percent}%"></i></div>
+    </div>`;
+  }).join('');
+  document.getElementById('usagePanel').innerHTML =
+    `<div class="kv" style="margin-bottom:10px">
+       <b>套餐</b><span>pro <span class="muted">至 2026-11-25</span></span>
+       <b>总用量</b><span>剩余 98%</span>
+       <b>可重置</b><span>2 次</span>
+     </div>` + rows;
+
+  // 4. 接入信息
+  document.getElementById('usage').textContent =
+    '# OpenAI 兼容\nbase_url : http://127.0.0.1:8770/v1\n' +
+    'api_key  : sk-today-xxxxxxxx\nmodel    : deepseek / glm-5.3\n\n' +
+    '# Anthropic 兼容\nbase_url : http://127.0.0.1:8770';
+});
+</script>
+</body>
+</html>
